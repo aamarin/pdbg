@@ -34,7 +34,11 @@
 #include <sys/param.h>
 #include <dirent.h>
 
-/* I2C common registers */
+/*
+ * I2C common registers
+ * - use as is on CFAM
+ * - use with I2C_PIB_OFFSET on PIB
+ */
 #define I2C_FIFO_REG 		0x0
 #define I2C_CMD_REG 		0x1
 #define I2C_MODE_REG 		0x2
@@ -48,11 +52,13 @@
 #define I2C_RESIDUAL_REG	0x9
 #define I2C_PORT_BUSY_REG	0xA
 
+/* I2C PIB only */
 #define I2C_PIB_OFFSET 		0x4
 #define I2C_PIB_ENGINE_0 	0x0000
 #define I2C_PIB_ENGINE_1 	0x1000
 #define I2C_PIB_ENGINE_2 	0x2000
 #define I2C_PIB_ENGINE_3 	0x3000
+#define I2C_PIB_FIFO4_REG	0x12
 
 /* I2C command register bits */
 #define I2C_CMD_WITH_START		PPC_BIT32(0)
@@ -125,13 +131,24 @@
 
 static int _i2cm_reg_write(struct i2cm *i2cm, uint32_t addr, uint32_t data)
 {
-	CHECK_ERR(fsi_write(&i2cm->target, addr, data));
+	if (i2cm->host)
+		/* pib addr space is 64 bits and i2cm only uses top 32 bits */
+		CHECK_ERR(pib_write(&i2cm->target, addr + I2C_PIB_OFFSET, (uint64_t)data << 32));
+	else
+		CHECK_ERR(fsi_write(&i2cm->target, addr, data));
 	return 0;
 }
 
 static int _i2cm_reg_read(struct i2cm *i2cm, uint32_t addr, uint32_t *data)
 {
-	CHECK_ERR(fsi_read(&i2cm->target, addr, data));
+	uint64_t d = (uint64_t)*data;
+
+	if (i2cm->host) {
+		CHECK_ERR(pib_read(&i2cm->target, addr + I2C_PIB_OFFSET, &d));
+		*data =  d >> 32;
+	} else {
+		CHECK_ERR(fsi_read(&i2cm->target, addr, data));
+	}
 	return 0;
 }
 
@@ -271,7 +288,11 @@ static int i2c_fifo_write(struct i2cm *i2cm, uint32_t *data, uint16_t size)
 			continue;
 
 		PR_INFO("\twriting: %x  to FIFO\n", data[bytes_written / 4]);
-		rc = _i2cm_reg_write(i2cm, I2C_FIFO_REG, data[bytes_written / 4]);
+		if (i2cm->host)
+			 rc = _i2cm_reg_write(i2cm, I2C_PIB_FIFO4_REG - I2C_PIB_OFFSET,
+					 	data[bytes_written / 4]);
+		else
+			rc = _i2cm_reg_write(i2cm, I2C_FIFO_REG, data[bytes_written / 4]);
 		if (rc)
 			return bytes_written;
 		bytes_written += 4;
@@ -302,9 +323,14 @@ static int i2c_fifo_read(struct i2cm *i2cm, uint32_t *data, uint16_t size)
 		if (!bytes_to_read)
 			continue;
 
-		rc = _i2cm_reg_read(i2cm, I2C_FIFO_REG, &tmp);
+		if (i2cm->host)
+			rc = _i2cm_reg_read(i2cm, I2C_PIB_FIFO4_REG -I2C_PIB_OFFSET, &tmp);
+		else
+			rc = _i2cm_reg_read(i2cm, I2C_FIFO_REG, &tmp);
+
 		if (rc)
 			return bytes_read;
+
 		memcpy(data + (bytes_read / 4), &tmp, 4);
 		PR_INFO(" %x \n", data[bytes_read / 4]);
 		bytes_read += 4;
@@ -456,10 +482,159 @@ static struct i2cm i2cm_cfam = {
 		.name =	"CFAM I2C Master",
 		.compatible = "ibm,fsi-i2c-master",
 		.class = "i2cm",
-	}
+	},
+	.host = false
 };
 DECLARE_HW_UNIT(i2cm_cfam);
 
+
+/////////////////////////////////////////////////////////////////////////////
+#define OCC_BASE  	0x00000000006C08A
+#define OCC_CLEAR 	0x00000000006C08B
+#define OCC_SET 	0x00000000006C08C
+
+
+#define OCC_LOCKED_ENGINE_1 PPC_BIT(17)
+#define OCC_LOCKED_ENGINE_2 PPC_BIT(19)
+#define OCC_LOCKED_ENGINE_3 PPC_BIT(21)
+#define I2CM_DT_TO_ID(x) ((x>>12) & 0xf)
+static int i2cm_locked_by_occ(int id, uint64_t occ_base)
+{
+	uint64_t mask;
+	switch (id)
+	{
+	case 1:
+		mask = OCC_LOCKED_ENGINE_1;
+		break;
+	case 2:
+		mask = OCC_LOCKED_ENGINE_2;
+		break;
+	case 3:
+		mask = OCC_LOCKED_ENGINE_3;
+		break;
+	default:
+		mask = 0;
+		break;
+	}
+	return !!(mask & occ_base);
+}
+
+static int pib_i2c_get(struct i2cbus *i2cbus, uint8_t addr, uint16_t size, uint8_t *d)
+{
+	uint64_t data = 0;
+	uint64_t bit;
+	struct pdbg_target *p;
+	struct i2cm *i2cm = target_to_i2cm(i2cbus->target.parent);
+
+	pdbg_for_each_class_target("pib", p) {
+		if (pdbg_target_probe(p) == PDBG_TARGET_ENABLED)
+			break;
+	}
+
+	if (!p) {
+		fprintf(stderr, "No PIB found\n");
+		return 0;
+	}
+	bit = PPC_BIT(16 + (i2cbus->id - 1) * 2);
+	pib_read(p, OCC_BASE, &data);
+
+	if( !i2cm_locked_by_occ(i2cbus->id, data)) {
+		/* lock i2cm */
+		pib_write(p, OCC_SET, bit);
+		pib_read(p, OCC_BASE, &data);
+
+		_i2c_get(i2cm, i2cbus->port, addr, size, d);
+
+		/* unlock i2cm */
+		pib_read(p, OCC_BASE, &data);
+		pib_read(p, OCC_CLEAR, &data);
+		pib_write(p, OCC_CLEAR, bit);
+		pib_read(p, OCC_BASE, &data);
+	} else {
+		PR_INFO("I2C: de%d: occflags = 0x%16" PRIx64 "(locks = %x:%x:%x)\n",
+			i2cbus->id, (u64) data, (u16) GETFIELD(PPC_BITMASK(16, 17), data),
+			(u16) GETFIELD(PPC_BITMASK(18, 19), data),
+			(u16) GETFIELD(PPC_BITMASK(20, 21), data));
+		PR_INFO("I2C master %x is locked by OCC :( \n", i2cbus->id);
+	}
+
+	return 0;
+}
+
+static int pib_i2c_put(struct i2cbus *i2cbus, uint8_t addr, uint16_t size, uint8_t *d)
+{
+	uint64_t data = 0;
+	uint64_t bit;
+	struct i2cm *i2cm = target_to_i2cm(i2cbus->target.parent);
+	struct pdbg_target *p;
+
+	pdbg_for_each_class_target("pib", p) {
+		if (pdbg_target_probe(p) == PDBG_TARGET_ENABLED)
+			break;
+	}
+
+	if (!p) {
+		fprintf(stderr, "No PIB found\n");
+		return 0;
+	}
+	bit = PPC_BIT(16 + (i2cbus->id - 1) * 2);
+	pib_read(p, OCC_BASE, &data);
+
+	if( !i2cm_locked_by_occ(i2cbus->id, data)) {
+		/* lock i2cm */
+		pib_write(p, OCC_SET, bit);
+		pib_read(p, OCC_BASE, &data);
+
+		_i2c_put(i2cm, i2cbus->port, addr, size, d);
+
+		/* unlock i2cm */
+		pib_read(p, OCC_BASE, &data);
+		pib_read(p, OCC_CLEAR, &data);
+		pib_write(p, OCC_CLEAR, bit);
+		pib_read(p, OCC_BASE, &data);
+	} else {
+		PR_INFO("I2C: de%d: occflags = 0x%16" PRIx64 "(locks = %x:%x:%x)\n",
+			i2cbus->id, (u64) data, (u16) GETFIELD(PPC_BITMASK(16, 17), data),
+			(u16) GETFIELD(PPC_BITMASK(18, 19), data),
+			(u16) GETFIELD(PPC_BITMASK(20, 21), data));
+		PR_INFO("I2C master %x is locked by OCC :( \n", i2cbus->id);
+	}
+	return 0;
+}
+
+int host_i2cm_target_probe(struct pdbg_target *target)
+{
+	int dt_id = pdbg_target_address(target, NULL);
+	int id = I2CM_DT_TO_ID(dt_id);
+	struct i2cbus *i2cbus = target_to_i2cbus(target);
+
+	i2cbus->id = id;
+	i2cbus->port = target->index;
+
+	return 0;
+}
+
+static struct i2cbus i2c_bus_pib = {
+	.target = {
+		.name =	"PIB I2C Bus",
+		.compatible = "ibm,power9-i2c-port",
+		.class = "i2c_bus",
+		.probe = i2cm_target_probe,
+	},
+	.read = pib_i2c_get,
+	.write = pib_i2c_put,
+};
+DECLARE_HW_UNIT(i2c_bus_pib);
+
+static struct i2cm i2c_pib = {
+	.target = {
+		.name =	"PIB I2C Master",
+		.compatible = "ibm,power9-i2cm",
+		.class = "i2cm",
+	},
+	.host = true,
+};
+DECLARE_HW_UNIT(i2c_pib);
 /////////////////////////////////////////////////////////////////////////////
 
 #ifdef ENABLE_I2CLIB
