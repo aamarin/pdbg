@@ -34,6 +34,14 @@
 			};
 		};
 
+		i2cm@1800 {
+			#address-cells = <0x1>;
+			#size-cells = <0x0>;
+			reg = <0x0 0x1800 0x400>;
+			compatible = "ibm,kernel-i2c-master";
+			include(p9-i2c.dts.m4)dnl
+		};
+
 		hmfsi@100000 {
 			#address-cells = <0x2>;
 			#size-cells = <0x1>;

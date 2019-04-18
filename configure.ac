@@ -49,4 +49,9 @@ want_gdbserver=false,
 want_gdbserver=true)
 AM_CONDITIONAL([GDBSERVER], [test x$want_gdbserver = xtrue])
 
+AC_ARG_ENABLE(i2clib,
+AC_HELP_STRING([--enable-i2clib], [enables looking for the i2c lib]),
+want_i2clib=true,
+want_i2clib=false)
+AM_CONDITIONAL([I2CLIB], [test x$want_i2clib = xtrue])
 AC_OUTPUT

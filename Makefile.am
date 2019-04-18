@@ -104,7 +104,8 @@ pdbg_SOURCES = \
 	src/scom.c \
 	src/thread.c \
 	src/util.c \
-	src/util.h
+	src/util.h \
+	src/i2c.c
 
 pdbg_CFLAGS = -I$(top_srcdir)/libpdbg -Wall -Werror -DGIT_SHA1=\"${GIT_SHA1}\" \
 	      $(ARCH_FLAGS)
@@ -178,6 +179,7 @@ libpdbg_la_SOURCES = \
 	libpdbg/hwunit.c \
 	libpdbg/hwunit.h \
 	libpdbg/i2c.c \
+	libpdbg/i2cm.c \
 	libpdbg/kernel.c \
 	libpdbg/libpdbg.c \
 	libpdbg/libpdbg.h \
@@ -191,6 +193,11 @@ libpdbg_la_SOURCES = \
 
 libpdbg_la_CFLAGS = -Wall -Werror
 libpdbg_la_LIBADD = libcronus.la libsbefifo.la
+
+if I2CLIB
+pdbg_LDADD += -li2c
+libpdbg_la_CFLAGS += -DENABLE_I2CLIB
+endif
 
 if BUILD_LIBFDT
 libpdbg_la_CFLAGS += -I$(top_srcdir)/libfdt
