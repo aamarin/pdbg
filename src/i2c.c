@@ -17,6 +17,8 @@
 #include <libpdbg.h>
 #include <inttypes.h>
 #include <stdlib.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #include "main.h"
 #include "optcmd.h"
@@ -33,6 +35,7 @@ static int geti2c(uint8_t addr, uint16_t size)
 
 	data = malloc(size);
 	assert(data);
+	assert(!(size % 4));
 
 	for_each_path_target_class("i2c_bus", target) {
 		if (pdbg_target_probe(target) != PDBG_TARGET_ENABLED)
@@ -51,3 +54,26 @@ static int geti2c(uint8_t addr, uint16_t size)
 	return 0;
 }
 OPTCMD_DEFINE_CMD_WITH_ARGS(geti2c, geti2c, (DATA8, DATA16));
+
+static int puti2c(uint8_t addr, uint16_t size, uint64_t data)
+{
+	uint8_t *d = (uint8_t *) &data;
+	struct pdbg_target *target, *selected = NULL;
+
+	assert(!(size % 4));
+
+	for_each_path_target_class("i2c_bus", target) {
+		if (pdbg_target_probe(target) != PDBG_TARGET_ENABLED)
+			continue;
+		selected = target;
+		if (i2c_write(target, addr, size, d) == 0)
+			break;
+		break;
+	}
+
+	if (selected == NULL)
+		return -1;
+	printf("wrote %i bytes \n", size);
+	return 0;
+}
+OPTCMD_DEFINE_CMD_WITH_ARGS(puti2c, puti2c, (DATA8, DATA16, DATA));

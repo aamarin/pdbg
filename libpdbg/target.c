@@ -221,6 +221,17 @@ int i2c_read(struct pdbg_target *i2cm_dt, uint8_t addr, uint16_t size, uint8_t *
 	return i2cbus->read(i2cbus, addr, size, data);
 }
 
+int i2c_write(struct pdbg_target *i2cm_dt, uint8_t addr, uint16_t size, uint8_t *data)
+{
+	struct i2cbus *i2cbus;
+	uint64_t addr64 = addr;
+
+	i2cm_dt = get_class_target_addr(i2cm_dt, "i2c_bus", &addr64);
+	i2cbus = target_to_i2cbus(i2cm_dt);
+
+	return i2cbus->write(i2cbus, addr, size, data);
+}
+
 int fsi_read(struct pdbg_target *fsi_dt, uint32_t addr, uint32_t *data)
 {
 	struct fsi *fsi;

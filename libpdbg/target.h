@@ -69,8 +69,16 @@ struct i2cbus {
 	struct pdbg_target target;
 	int (*read)(struct i2cbus *, uint8_t, uint16_t, uint8_t *);
 	int (*write)(struct i2cbus *, uint8_t, uint16_t, uint8_t*);
+	uint8_t port;
 	int i2c_fd;
 };
+
+#define target_to_i2cm(x) container_of(x, struct i2cm, target)
+
+struct i2cm {
+	struct pdbg_target target;
+};
+
 #define target_to_i2cbus(x) container_of(x, struct i2cbus, target)
 
 #endif
